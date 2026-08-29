@@ -1,0 +1,534 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<title>Pixel Guardian Quest</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0a0a12;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+    overflow: hidden;
+    font-family: 'Courier New', monospace;
+  }
+  #gameContainer {
+    position: relative;
+    box-shadow: 0 0 40px rgba(0, 200, 255, 0.3);
+    border: 4px solid #1a1a2e;
+  }
+  canvas {
+    display: block;
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+    background: #000;
+  }
+  #ui {
+    position: absolute;
+    top: 10px;
+    left: 10px;
+    color: white;
+    font-size: 14px;
+    text-shadow: 2px 2px 0 #000;
+    pointer-events: none;
+    z-index: 10;
+  }
+  #startScreen, #gameOverScreen {
+    position: absolute;
+    inset: 0;
+    background: rgba(0,0,0,0.85);
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    color: white;
+    z-index: 20;
+    text-align: center;
+  }
+  #startScreen h1 {
+    font-size: 36px;
+    color: #00e5ff;
+    text-shadow: 0 0 10px #00e5ff, 3px 3px 0 #000;
+    margin-bottom: 20px;
+  }
+  #startScreen p, #gameOverScreen p {
+    margin: 8px 0;
+    font-size: 16px;
+  }
+  .btn {
+    margin-top: 25px;
+    padding: 12px 30px;
+    background: #00bcd4;
+    border: none;
+    color: white;
+    font-size: 18px;
+    font-family: 'Courier New', monospace;
+    cursor: pointer;
+    border-radius: 4px;
+    box-shadow: 0 4px 0 #00838f;
+    transition: 0.1s;
+  }
+  .btn:hover { background: #00e5ff; transform: translateY(-2px); }
+  .btn:active { transform: translateY(2px); box-shadow: 0 2px 0 #00838f; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+
+<div id="gameContainer">
+  <canvas id="gameCanvas" width="960" height="540"></canvas>
+  
+  <div id="ui">
+    <div>HP: <span id="hpText">100</span></div>
+    <div>Score: <span id="scoreText">0</span></div>
+    <div style="margin-top:8px;font-size:12px;opacity:0.8">
+      Arrow/WASD = Move | Space = Jump | X = Attack
+    </div>
+  </div>
+
+  <div id="startScreen">
+    <h1>PIXEL GUARDIAN QUEST</h1>
+    <p>Petualangan Pixel ala Guardian Tales</p>
+    <p>Kalahkan musuh & kumpulkan coin!</p>
+    <button class="btn" onclick="startGame()">MULAI PETUALANGAN</button>
+  </div>
+
+  <div id="gameOverScreen" class="hidden">
+    <h1 style="color:#ff5252;font-size:32px;">GAME OVER</h1>
+    <p>Score akhir: <span id="finalScore">0</span></p>
+    <button class="btn" onclick="restartGame()">COBA LAGI</button>
+  </div>
+</div>
+
+<script>
+// ====================== CONFIG ======================
+const INTERNAL_W = 160;
+const INTERNAL_H = 90;
+const SCALE = 6; // 160*6 = 960, 90*6 = 540
+
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+ctx.imageSmoothingEnabled = false;
+
+// ====================== GAME STATE ======================
+let gameRunning = false;
+let score = 0;
+let cameraX = 0;
+
+// Player
+const player = {
+  x: 30,
+  y: 50,
+  w: 8,
+  h: 12,
+  vx: 0,
+  vy: 0,
+  speed: 1.4,
+  jumpPower: 4.2,
+  onGround: false,
+  hp: 100,
+  maxHp: 100,
+  facing: 1, // 1 = right, -1 = left
+  attackCooldown: 0,
+  invincible: 0,
+  color: '#4fc3f7'
+};
+
+// World
+const gravity = 0.22;
+const friction = 0.82;
+
+// Platforms (x, y, w, h)
+const platforms = [
+  {x:0, y:78, w:400, h:12},          // ground
+  {x:50, y:60, w:30, h:6},
+  {x:100, y:48, w:25, h:6},
+  {x:150, y:55, w:40, h:6},
+  {x:210, y:42, w:20, h:6},
+  {x:250, y:60, w:35, h:6},
+  {x:300, y:50, w:30, h:6},
+  {x:340, y:35, w:25, h:6},
+];
+
+// Enemies
+let enemies = [
+  {x:80, y:66, w:10, h:10, vx:0.6, hp:30, maxHp:30, type:'slime', color:'#81c784'},
+  {x:180, y:43, w:10, h:10, vx:-0.5, hp:40, maxHp:40, type:'slime', color:'#66bb6a'},
+  {x:270, y:48, w:12, h:12, vx:0.7, hp:50, maxHp:50, type:'goblin', color:'#ef5350'},
+  {x:320, y:23, w:10, h:10, vx:-0.4, hp:35, maxHp:35, type:'slime', color:'#81c784'},
+];
+
+// Coins
+let coins = [
+  {x:60, y:50, collected:false},
+  {x:115, y:38, collected:false},
+  {x:170, y:45, collected:false},
+  {x:230, y:32, collected:false},
+  {x:280, y:50, collected:false},
+  {x:350, y:25, collected:false},
+];
+
+// Particles
+let particles = [];
+
+// Keys
+const keys = {};
+
+// ====================== INPUT ======================
+window.addEventListener('keydown', e => {
+  keys[e.key.toLowerCase()] = true;
+  if (['arrowup','arrowdown','arrowleft','arrowright',' '].includes(e.key.toLowerCase())) {
+    e.preventDefault();
+  }
+});
+window.addEventListener('keyup', e => {
+  keys[e.key.toLowerCase()] = false;
+});
+
+// ====================== HELPER ======================
+function rectCollision(a, b) {
+  return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+}
+
+function spawnParticles(x, y, color, count = 8) {
+  for (let i = 0; i < count; i++) {
+    particles.push({
+      x: x,
+      y: y,
+      vx: (Math.random() - 0.5) * 3,
+      vy: (Math.random() - 0.5) * 3 - 1,
+      life: 20 + Math.random() * 15,
+      color: color,
+      size: 1 + Math.random() * 1.5
+    });
+  }
+}
+
+// ====================== UPDATE ======================
+function update() {
+  if (!gameRunning) return;
+
+  // --- Player Movement ---
+  if (keys['arrowleft'] || keys['a']) {
+    player.vx = -player.speed;
+    player.facing = -1;
+  } else if (keys['arrowright'] || keys['d']) {
+    player.vx = player.speed;
+    player.facing = 1;
+  } else {
+    player.vx *= friction;
+  }
+
+  // Jump
+  if ((keys['arrowup'] || keys['w'] || keys[' ']) && player.onGround) {
+    player.vy = -player.jumpPower;
+    player.onGround = false;
+  }
+
+  // Attack
+  if ((keys['x'] || keys['j']) && player.attackCooldown <= 0) {
+    player.attackCooldown = 18;
+    // Attack hitbox
+    const atk = {
+      x: player.facing === 1 ? player.x + player.w : player.x - 10,
+      y: player.y + 2,
+      w: 12,
+      h: 8
+    };
+    enemies.forEach(e => {
+      if (e.hp > 0 && rectCollision(atk, e)) {
+        e.hp -= 20;
+        spawnParticles(e.x + e.w/2, e.y + e.h/2, '#ffeb3b', 10);
+        if (e.hp <= 0) {
+          score += 50;
+          spawnParticles(e.x + e.w/2, e.y + e.h/2, e.color, 15);
+        }
+      }
+    });
+  }
+  if (player.attackCooldown > 0) player.attackCooldown--;
+
+  // Gravity
+  player.vy += gravity;
+  player.x += player.vx;
+  player.y += player.vy;
+
+  // Platform collision
+  player.onGround = false;
+  platforms.forEach(p => {
+    if (rectCollision(player, p)) {
+      // From above
+      if (player.vy > 0 && player.y + player.h - player.vy <= p.y + 2) {
+        player.y = p.y - player.h;
+        player.vy = 0;
+        player.onGround = true;
+      }
+      // From below
+      else if (player.vy < 0 && player.y - player.vy >= p.y + p.h - 2) {
+        player.y = p.y + p.h;
+        player.vy = 0;
+      }
+      // Sides
+      else if (player.vx > 0) {
+        player.x = p.x - player.w;
+      } else if (player.vx < 0) {
+        player.x = p.x + p.w;
+      }
+    }
+  });
+
+  // Keep player in world
+  if (player.x < 0) player.x = 0;
+  if (player.y > INTERNAL_H + 20) {
+    // Fall death
+    player.hp = 0;
+  }
+
+  // Invincibility
+  if (player.invincible > 0) player.invincible--;
+
+  // --- Enemies ---
+  enemies.forEach(e => {
+    if (e.hp <= 0) return;
+    e.x += e.vx;
+
+    // Simple patrol (turn at edges of platforms roughly)
+    if (e.x < 20 || e.x > 380) e.vx *= -1;
+
+    // Gravity for enemies (simple)
+    e.y += 0.5;
+    platforms.forEach(p => {
+      if (rectCollision(e, p) && e.y + e.h - 0.5 <= p.y + 3) {
+        e.y = p.y - e.h;
+      }
+    });
+
+    // Touch player
+    if (player.invincible <= 0 && rectCollision(player, e)) {
+      player.hp -= 15;
+      player.invincible = 40;
+      player.vx = (player.x < e.x ? -2 : 2);
+      player.vy = -2;
+      spawnParticles(player.x + player.w/2, player.y + player.h/2, '#ff5252', 8);
+    }
+  });
+
+  // --- Coins ---
+  coins.forEach(c => {
+    if (!c.collected && Math.abs(player.x + player.w/2 - c.x) < 8 && Math.abs(player.y + player.h/2 - c.y) < 8) {
+      c.collected = true;
+      score += 25;
+      spawnParticles(c.x, c.y, '#ffd54f', 12);
+    }
+  });
+
+  // --- Particles ---
+  particles = particles.filter(p => {
+    p.x += p.vx;
+    p.y += p.vy;
+    p.vy += 0.1;
+    p.life--;
+    return p.life > 0;
+  });
+
+  // Camera
+  cameraX = player.x - INTERNAL_W / 3;
+  if (cameraX < 0) cameraX = 0;
+
+  // UI update
+  document.getElementById('hpText').textContent = Math.max(0, Math.floor(player.hp));
+  document.getElementById('scoreText').textContent = score;
+
+  // Game Over
+  if (player.hp <= 0) {
+    gameRunning = false;
+    document.getElementById('finalScore').textContent = score;
+    document.getElementById('gameOverScreen').classList.remove('hidden');
+  }
+}
+
+// ====================== DRAW ======================
+function draw() {
+  // Clear
+  ctx.fillStyle = '#0d1b2a';
+  ctx.fillRect(0, 0, INTERNAL_W, INTERNAL_H);
+
+  // ===== BACKGROUND (Guardian Tales style) =====
+  // Sky gradient
+  const grad = ctx.createLinearGradient(0, 0, 0, INTERNAL_H);
+  grad.addColorStop(0, '#1b3a4b');
+  grad.addColorStop(0.6, '#2e5a6e');
+  grad.addColorStop(1, '#3d7a8c');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, INTERNAL_W, INTERNAL_H);
+
+  // Distant mountains
+  ctx.fillStyle = '#1a3a4a';
+  drawMountain(20 - cameraX * 0.2, 55, 50, 40);
+  drawMountain(80 - cameraX * 0.2, 50, 60, 45);
+  drawMountain(140 - cameraX * 0.2, 58, 45, 35);
+
+  // Closer hills
+  ctx.fillStyle = '#2a5a4a';
+  drawMountain(10 - cameraX * 0.4, 65, 40, 30);
+  drawMountain(70 - cameraX * 0.4, 68, 50, 25);
+  drawMountain(130 - cameraX * 0.4, 62, 45, 35);
+
+  // Clouds
+  ctx.fillStyle = 'rgba(255,255,255,0.25)';
+  drawCloud(30 - cameraX * 0.15, 15);
+  drawCloud(100 - cameraX * 0.15, 10);
+  drawCloud(160 - cameraX * 0.15, 18);
+
+  // ===== PLATFORMS =====
+  platforms.forEach(p => {
+    // Grass top
+    ctx.fillStyle = '#4caf50';
+    ctx.fillRect(p.x - cameraX, p.y, p.w, 3);
+    // Dirt
+    ctx.fillStyle = '#5d4037';
+    ctx.fillRect(p.x - cameraX, p.y + 3, p.w, p.h - 3);
+    // Pixel detail
+    ctx.fillStyle = '#388e3c';
+    for (let i = 0; i < p.w; i += 4) {
+      ctx.fillRect(p.x - cameraX + i, p.y, 2, 2);
+    }
+  });
+
+  // ===== COINS =====
+  coins.forEach(c => {
+    if (c.collected) return;
+    const bounce = Math.sin(Date.now() / 200 + c.x) * 1.5;
+    ctx.fillStyle = '#ffd54f';
+    ctx.fillRect(c.x - cameraX - 2, c.y + bounce - 2, 4, 4);
+    ctx.fillStyle = '#ffb300';
+    ctx.fillRect(c.x - cameraX - 1, c.y + bounce - 1, 2, 2);
+  });
+
+  // ===== ENEMIES =====
+  enemies.forEach(e => {
+    if (e.hp <= 0) return;
+    // Body
+    ctx.fillStyle = e.color;
+    ctx.fillRect(e.x - cameraX, e.y, e.w, e.h);
+    // Eyes
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(e.x - cameraX + 2, e.y + 2, 2, 2);
+    ctx.fillRect(e.x - cameraX + 6, e.y + 2, 2, 2);
+    // HP bar
+    ctx.fillStyle = '#333';
+    ctx.fillRect(e.x - cameraX, e.y - 4, e.w, 2);
+    ctx.fillStyle = '#f44336';
+    ctx.fillRect(e.x - cameraX, e.y - 4, e.w * (e.hp / e.maxHp), 2);
+  });
+
+  // ===== PLAYER =====
+  if (player.invincible % 4 < 2) { // blink when hit
+    // Body
+    ctx.fillStyle = player.color;
+    ctx.fillRect(player.x - cameraX, player.y, player.w, player.h);
+    
+    // Head detail
+    ctx.fillStyle = '#81d4fa';
+    ctx.fillRect(player.x - cameraX + 1, player.y, 6, 5);
+    
+    // Eyes
+    ctx.fillStyle = '#fff';
+    if (player.facing === 1) {
+      ctx.fillRect(player.x - cameraX + 4, player.y + 2, 2, 2);
+    } else {
+      ctx.fillRect(player.x - cameraX + 2, player.y + 2, 2, 2);
+    }
+    
+    // Attack slash
+    if (player.attackCooldown > 10) {
+      ctx.fillStyle = 'rgba(255,255,200,0.7)';
+      const slashX = player.facing === 1 ? player.x + player.w : player.x - 8;
+      ctx.fillRect(slashX - cameraX, player.y + 3, 8, 5);
+    }
+  }
+
+  // ===== PARTICLES =====
+  particles.forEach(p => {
+    ctx.fillStyle = p.color;
+    ctx.globalAlpha = p.life / 30;
+    ctx.fillRect(p.x - cameraX, p.y, p.size, p.size);
+    ctx.globalAlpha = 1;
+  });
+
+  // ===== FOREGROUND DETAILS =====
+  // Small plants
+  ctx.fillStyle = '#2e7d32';
+  for (let i = 0; i < 20; i++) {
+    const px = (i * 37) % 400;
+    ctx.fillRect(px - cameraX, 76, 2, 3);
+  }
+}
+
+// Helper draw functions
+function drawMountain(x, y, w, h) {
+  ctx.beginPath();
+  ctx.moveTo(x, y + h);
+  ctx.lineTo(x + w/2, y);
+  ctx.lineTo(x + w, y + h);
+  ctx.closePath();
+  ctx.fill();
+}
+function drawCloud(x, y) {
+  ctx.fillRect(x, y, 12, 5);
+  ctx.fillRect(x + 4, y - 3, 10, 5);
+  ctx.fillRect(x + 8, y, 8, 4);
+}
+
+// ====================== LOOP ======================
+function gameLoop() {
+  // We render at internal resolution then scale
+  ctx.save();
+  ctx.scale(SCALE, SCALE);
+  
+  update();
+  draw();
+  
+  ctx.restore();
+  requestAnimationFrame(gameLoop);
+}
+
+// ====================== START / RESTART ======================
+function startGame() {
+  document.getElementById('startScreen').classList.add('hidden');
+  gameRunning = true;
+  // reset state if needed
+}
+
+function restartGame() {
+  // Reset everything
+  player.x = 30;
+  player.y = 50;
+  player.vx = 0;
+  player.vy = 0;
+  player.hp = 100;
+  player.invincible = 0;
+  player.attackCooldown = 0;
+  score = 0;
+  
+  enemies = [
+    {x:80, y:66, w:10, h:10, vx:0.6, hp:30, maxHp:30, type:'slime', color:'#81c784'},
+    {x:180, y:43, w:10, h:10, vx:-0.5, hp:40, maxHp:40, type:'slime', color:'#66bb6a'},
+    {x:270, y:48, w:12, h:12, vx:0.7, hp:50, maxHp:50, type:'goblin', color:'#ef5350'},
+    {x:320, y:23, w:10, h:10, vx:-0.4, hp:35, maxHp:35, type:'slime', color:'#81c784'},
+  ];
+  
+  coins.forEach(c => c.collected = false);
+  particles = [];
+  
+  document.getElementById('gameOverScreen').classList.add('hidden');
+  gameRunning = true;
+}
+
+// Start the loop
+gameLoop();
+</script>
+</body>
+</html>
